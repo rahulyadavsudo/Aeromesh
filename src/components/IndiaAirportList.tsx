@@ -26,8 +26,10 @@ export const IndiaAirportList: React.FC<IndiaAirportListProps> = ({
       return (
         s.code.toLowerCase().includes(clean) ||
         s.city.toLowerCase().includes(clean) ||
+        (s.state ? s.state.toLowerCase().includes(clean) : false) ||
         s.name.toLowerCase().includes(clean) ||
-        s.transitLink.toLowerCase().includes(clean)
+        s.transitLink.toLowerCase().includes(clean) ||
+        Boolean(s.aliases?.some((a) => a.toLowerCase().includes(clean)))
       );
     });
   }, [filterText]);
@@ -54,7 +56,7 @@ export const IndiaAirportList: React.FC<IndiaAirportListProps> = ({
             type="text"
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
-            placeholder="Filter city or code (e.g. DEL, Goa)..."
+            placeholder="Filter city, state or code (e.g. Maharashtra, DEL)..."
             aria-label="Filter Indian airports"
             className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white pl-9 pr-3 py-2 text-xs font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0F4C81] focus:outline-none focus:ring-2 focus:ring-[#0F4C81]/20 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
           />
@@ -89,6 +91,7 @@ export const IndiaAirportList: React.FC<IndiaAirportListProps> = ({
                     <div className="min-w-0">
                       <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
                         {airport.city}
+                        {airport.state && airport.state.toLowerCase() !== airport.city.toLowerCase() ? `, ${airport.state}` : ''}
                       </h3>
                       <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
                         {airport.name}

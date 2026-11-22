@@ -12,6 +12,7 @@ import type {
   FlightOption,
   LuggageConfig,
   PassengerProfile,
+  TripType,
 } from '../types/travel';
 import { formatMoney } from '../utils/formatters';
 
@@ -19,12 +20,16 @@ interface CheckoutDrawerProps {
   open: boolean;
   onClose: () => void;
   flight: FlightOption;
+  returnFlight?: FlightOption | null;
+  tripType: TripType;
   travelDate: string;
+  returnDate?: string;
   cabin: CabinClass;
   luggage: LuggageConfig;
   selectedSeat: string;
   passengersCount: number;
   fare: FareBreakdown;
+  fareLockId?: string;
   currency: CurrencyCode;
   onCurrencyChange: (next: CurrencyCode) => void;
   savedPassengers: PassengerProfile[];
@@ -38,12 +43,16 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
   open,
   onClose,
   flight,
+  returnFlight,
+  tripType,
   travelDate,
+  returnDate,
   cabin,
   luggage,
   selectedSeat,
   passengersCount,
   fare,
+  fareLockId,
   currency,
   onCurrencyChange,
   savedPassengers,
@@ -142,11 +151,15 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
         },
         body: JSON.stringify({
           flight,
+          returnFlight: tripType === 'round-trip' ? returnFlight : undefined,
+          tripType,
           travelDate,
+          returnDate: tripType === 'round-trip' ? returnDate : undefined,
           cabin,
           luggage,
           currency,
           passengersCount,
+          fareLockId,
           passenger: {
             fullName,
             email,
@@ -193,7 +206,9 @@ export const CheckoutDrawer: React.FC<CheckoutDrawerProps> = ({
               {t.checkoutTitle}
             </h2>
             <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
-              {flight.flightNumber} · {flight.from} → {flight.to} · {travelDate} · Seat {selectedSeat || 'Auto'} · {luggage.checkedBagsCount} bag(s)
+              {flight.flightNumber} · {flight.from} {tripType === 'round-trip' ? '⇄' : '→'} {flight.to} · {travelDate}
+              {tripType === 'round-trip' && returnDate ? ` / ${returnDate}` : ''} · Seat {selectedSeat || 'Auto'} · {luggage.checkedBagsCount} bag(s)
+              {fareLockId ? ` · Hold ${fareLockId}` : ''}
             </p>
           </div>
           <button

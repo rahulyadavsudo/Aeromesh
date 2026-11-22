@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MapPin, Train, Plane } from 'lucide-react';
+import { MapPin, Train, Plane, X } from 'lucide-react';
 import { STATIONS } from '../data/stationsAndFlights';
 import type { Station } from '../types/travel';
 
@@ -10,6 +10,19 @@ interface StationAutocompleteProps {
   lowBandwidth: boolean;
   simulatedOffline: boolean;
   excludeCode?: string;
+}
+
+function stationMatchesQuery(s: Station, clean: string): boolean {
+  if (!clean) return true;
+  return (
+    s.code.toLowerCase().includes(clean) ||
+    s.city.toLowerCase().includes(clean) ||
+    (s.state ? s.state.toLowerCase().includes(clean) : false) ||
+    s.name.toLowerCase().includes(clean) ||
+    s.country.toLowerCase().includes(clean) ||
+    s.transitLink.toLowerCase().includes(clean) ||
+    Boolean(s.aliases?.some((a) => a.toLowerCase().includes(clean)))
+  );
 }
 
 export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
@@ -27,6 +40,8 @@ export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
   const [results, setResults] = useState<Station[]>(STATIONS.slice(0, 8));
   const [activeIndex, setActiveIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const searchSeqRef = useRef(0);
 
   useEffect(() => {
     const st = STATIONS.find((s) => s.code === value);
@@ -46,32 +61,28 @@ export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
   }, []);
 
   const runSearch = async (term: string, filterOverride?: 'all' | 'india') => {
+    const seq = ++searchSeqRef.current;
     const clean = term.trim().toLowerCase();
     const activeFilter = filterOverride ?? hubFilter;
-    const localFilter = () =>
-      STATIONS.filter(
-        (s) =>
-          s.code !== excludeCode &&
-          (activeFilter !== 'india' || s.country === 'India') &&
-          (!clean ||
-            s.code.toLowerCase().includes(clean) ||
-            s.city.toLowerCase().includes(clean) ||
-            s.name.toLowerCase().includes(clean) ||
-            s.country.toLowerCase().includes(clean))
-      ).slice(0, 15);
+    const localMatches = STATIONS.filter(
+      (s) =>
+        s.code !== excludeCode &&
+        (activeFilter !== 'india' || s.country === 'India') &&
+        stationMatchesQuery(s, clean)
+    ).slice(0, 15);
 
-    // Always render immediate local prefix matches for zero-latency low-bandwidth UX
-    setResults(localFilter());
+    // Immediate zero-latency local results
+    setResults(localMatches);
     setActiveIndex(0);
 
-    if (simulatedOffline || !navigator.onLine) return;
+    if (simulatedOffline || (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
 
     try {
       const countryParam = activeFilter === 'india' ? '&country=India' : '';
       const resp = await fetch(`/api/stations?q=${encodeURIComponent(clean)}${countryParam}`, {
         headers: lowBandwidth ? { 'x-bandwidth-mode': 'low' } : {},
       });
-      if (resp.ok) {
+      if (resp.ok && seq === searchSeqRef.current) {
         const data = await resp.json();
         if (Array.isArray(data.stations)) {
           const merged = (data.stations as Station[])
@@ -101,12 +112,14 @@ export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
       <div className="relative">
         <MapPin className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
         <input
+          ref={inputRef}
           type="text"
           value={query}
           aria-label={label}
           aria-expanded={open}
           autoComplete="off"
-          onFocus={() => {
+          onFocus={(e) => {
+            e.currentTarget.select();
             setOpen(true);
             runSearch('');
           }}
@@ -131,14 +144,32 @@ export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
               setOpen(false);
             }
           }}
-          placeholder="City, airport or IATA code (e.g. DEL, BOM, JFK)"
-          className="w-full min-h-[44px] rounded-lg border border-slate-300 bg-white pl-9 pr-12 py-2.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0F4C81] focus:outline-none focus:ring-2 focus:ring-[#0F4C81]/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          placeholder="City, state, airport or IATA code (e.g. Maharashtra, DEL)"
+          className="w-full min-h-[44px] rounded-lg border border-slate-300 bg-white pl-9 pr-20 py-2.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0F4C81] focus:outline-none focus:ring-2 focus:ring-[#0F4C81]/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
         />
-        {selectedStation && (
-          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 font-mono text-xs font-semibold text-[#0F4C81] dark:text-blue-400">
-            {selectedStation.code}
-          </span>
-        )}
+        <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+          {query && (
+            <button
+              type="button"
+              aria-label={`Clear ${label}`}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setQuery('');
+                setOpen(true);
+                runSearch('');
+                inputRef.current?.focus();
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+          {selectedStation && (
+            <span className="pointer-events-none font-mono text-xs font-semibold text-[#0F4C81] dark:text-blue-400">
+              {selectedStation.code}
+            </span>
+          )}
+        </div>
       </div>
 
       {open && (
@@ -152,7 +183,7 @@ export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
                 onMouseDown={(e) => {
                   e.preventDefault();
                   setHubFilter('all');
-                  runSearch('', 'all');
+                  runSearch(query === `${selectedStation?.city} (${selectedStation?.code})` ? '' : query, 'all');
                 }}
                 className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
                   hubFilter === 'all'
@@ -168,7 +199,7 @@ export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
                 onMouseDown={(e) => {
                   e.preventDefault();
                   setHubFilter('india');
-                  runSearch('', 'india');
+                  runSearch(query === `${selectedStation?.city} (${selectedStation?.code})` ? '' : query, 'india');
                 }}
                 className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
                   hubFilter === 'india'
@@ -183,44 +214,48 @@ export const StationAutocomplete: React.FC<StationAutocompleteProps> = ({
 
           {results.length === 0 ? (
             <div className="px-3.5 py-4 text-center text-xs text-slate-500 dark:text-slate-400">
-              No matching airports or stations found.
+              No matching airports, cities, or states found.
             </div>
           ) : (
             <ul role="listbox" className="max-h-64 overflow-auto py-1">
-              {results.map((st, idx) => (
-                <li key={st.code}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={idx === activeIndex}
-                    onMouseDown={() => selectStation(st)}
-                    className={`flex w-full min-h-[44px] items-center justify-between gap-3 px-3.5 py-2 text-left text-sm transition-colors ${
-                      idx === activeIndex
-                        ? 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-white'
-                        : 'text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {st.type === 'rail_hub' ? (
-                        <Train className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
-                      ) : (
-                        <Plane className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="font-medium truncate">
-                          {st.city}, {st.country}
-                        </div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                          {st.name} · {st.transitLink}
+              {results.map((st, idx) => {
+                const showState = st.state && st.state.toLowerCase() !== st.city.toLowerCase();
+                return (
+                  <li key={st.code}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={idx === activeIndex}
+                      onMouseDown={() => selectStation(st)}
+                      className={`flex w-full min-h-[44px] items-center justify-between gap-3 px-3.5 py-2 text-left text-sm transition-colors ${
+                        idx === activeIndex
+                          ? 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-white'
+                          : 'text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800/60'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {st.type === 'rail_hub' ? (
+                          <Train className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                        ) : (
+                          <Plane className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-medium truncate">
+                            {st.city}
+                            {showState ? `, ${st.state}` : ''}, {st.country}
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                            {st.name} · {st.transitLink}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <span className="font-mono text-xs font-semibold text-[#0F4C81] dark:text-blue-400 shrink-0">
-                      {st.code}
-                    </span>
-                  </button>
-                </li>
-              ))}
+                      <span className="font-mono text-xs font-semibold text-[#0F4C81] dark:text-blue-400 shrink-0">
+                        {st.code}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

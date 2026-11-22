@@ -1,0 +1,118 @@
+services:
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      retries: 5
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aeromesh
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: aeromesh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aeromesh"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    ports:
+      - "4317:4317"
+
+  edge-rate-limiter-svc-go:
+    build: ./edge-rate-limiter-svc-go
+    ports:
+      - "8080:8080"
+    environment:
+      BFF_UPSTREAM_URL: http://api-gateway-bff:3000
+    depends_on:
+      - api-gateway-bff
+      - redis
+
+  api-gateway-bff:
+    build: ..
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      - kafka
+      - redis
+
+  station-search-svc-go:
+    build: ./station-search-svc-go
+    ports: ["8082:8082"]
+    depends_on: [kafka, redis]
+
+  fare-luggage-svc-rust:
+    build: ./fare-luggage-svc-rust
+    ports: ["8083:8083"]
+    depends_on: [kafka]
+
+  booking-svc-java:
+    build: ./booking-svc-java
+    ports: ["8084:8084"]
+    depends_on: [kafka, postgres]
+
+  payment-gateway-svc-java:
+    build: ./payment-gateway-svc-java
+    ports: ["8085:8085"]
+    depends_on: [kafka, postgres]
+
+  qr-boarding-svc-rust:
+    build: ./qr-boarding-svc-rust
+    ports: ["8086:8086"]
+    environment:
+      QR_SIGNING_SECRET: ${QR_SIGNING_SECRET}
+
+  notification-svc-go:
+    build: ./notification-svc-go
+    ports: ["8087:8087"]
+    depends_on: [kafka, redis]
+
+  passenger-profile-svc-py:
+    build: ./passenger-profile-svc-py
+    ports: ["8088:8088"]
+    depends_on: [postgres]
+
+  travel-analytics-svc-py:
+    build: ./travel-analytics-svc-py
+    ports: ["8089:8089"]
+    depends_on: [kafka]
+
+  offline-map-svc-go:
+    build: ./offline-map-svc-go
+    ports: ["8090:8090"]
+
+  airport-transfer-svc-go:
+    build: ./airport-transfer-svc-go
+    ports: ["8091:8091"]
+    depends_on: [kafka]
+
+  loyalty-rewards-svc-py:
+    build: ./loyalty-rewards-svc-py
+    ports: ["8092:8092"]
+    depends_on: [kafka, postgres]
+
+  flight-ops-telemetry-svc-rust:
+    build: ./flight-ops-telemetry-svc-rust
+    ports: ["8093:8093"]
+    depends_on: [kafka]

@@ -4,13 +4,19 @@ export type LanguageCode = 'en' | 'es' | 'fr' | 'de' | 'ja' | 'hi';
 
 export type CabinClass = 'economy' | 'premium' | 'business' | 'first';
 
+export type TripType = 'one-way' | 'round-trip';
+
+export type RoutingPreference = 'all' | 'direct' | 'via';
+
 export type FlightStatus = 'On Time' | 'Boarding' | 'Delayed' | 'Gate Changed' | 'Completed';
 
 export interface Station {
   code: string;
   name: string;
   city: string;
+  state?: string;
   country: string;
+  aliases?: string[];
   region: 'NA' | 'EU' | 'APAC' | 'MEA';
   type: 'airport' | 'rail_hub';
   terminals: string[];
@@ -39,6 +45,9 @@ export interface FlightOption {
   status: FlightStatus;
   basePriceUsd: number;
   stops: number;
+  viaAirport?: string;
+  viaCity?: string;
+  layoverMinutes?: number;
   co2Kg: number;
   seatsRemaining: number;
 }
@@ -54,7 +63,10 @@ export interface LuggageConfig {
 export interface FareBreakdown {
   currency: CurrencyCode;
   fxRate: number;
+  tripType?: TripType;
   baseFare: number;
+  returnBaseFare?: number;
+  roundTripDiscount?: number;
   cabinUpgrade: number;
   taxesAndFees: number;
   carryOnFee: number;
@@ -67,6 +79,45 @@ export interface FareBreakdown {
   perPassengerTotal: number;
   passengers: number;
   payloadBytesSavedInLowBandwidth?: number;
+}
+
+export interface FareLockRecord {
+  lockId: string;
+  route: string;
+  tripType: TripType;
+  cabin: CabinClass;
+  currency: CurrencyCode;
+  lockedAmount: number;
+  depositAmount: number;
+  flightNumber: string;
+  returnFlightNumber?: string;
+  expiresAt: string;
+  createdAt: string;
+  status: 'Active' | 'Released' | 'Applied';
+}
+
+export type DoorToDoorTransferMode = 'airport-only' | 'express-rail' | 'city-cab';
+
+export type FareSplitMode = 'equal' | 'seat-weighted' | 'organizer-base';
+
+export interface FareSplitShare {
+  travelerIndex: number;
+  label: string;
+  seatLabel: string;
+  amount: number;
+  shareCode: string;
+}
+
+export interface FareSplitRecord {
+  splitId: string;
+  route: string;
+  currency: CurrencyCode;
+  totalAmount: number;
+  passengers: number;
+  mode: FareSplitMode;
+  shares: FareSplitShare[];
+  shareUrlPath: string;
+  createdAt: string;
 }
 
 export interface PassengerProfile {
@@ -93,9 +144,13 @@ export interface PassengerProfile {
 export interface BookingRecord {
   pnr: string;
   createdAt: string;
+  tripType?: TripType;
   flight: FlightOption;
+  returnFlight?: FlightOption;
   travelDate: string;
+  returnDate?: string;
   cabin: CabinClass;
+  fareLockId?: string;
   passenger: {
     fullName: string;
     email: string;

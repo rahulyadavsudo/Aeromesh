@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { Check, Download, Map as MapIcon, Navigation, ZoomIn, ZoomOut } from 'lucide-react';
 import { OFFLINE_MAP_PACKS, STATIONS } from '../data/stationsAndFlights';
@@ -21,13 +21,14 @@ export const OfflineVectorMap: React.FC<OfflineVectorMapProps> = ({
 }) => {
   const [zoom, setZoom] = useState(1);
   const [activeStationCode, setActiveStationCode] = useState(selectedFrom || 'LHR');
-  const [cachedRegions, setCachedRegions] = useState<string[]>(() =>
-    loadOfflineItem<string[]>('cachedMapRegions', ['EU', 'NA'])
-  );
-  const [cachedPacks, setCachedPacks] = useState<Record<string, OfflineMapPack>>(() =>
-    loadOfflineItem<Record<string, OfflineMapPack>>('cachedMapPacks', {})
-  );
+  const [cachedRegions, setCachedRegions] = useState<string[]>(['EU', 'NA']);
+  const [cachedPacks, setCachedPacks] = useState<Record<string, OfflineMapPack>>({});
   const [syncingRegion, setSyncingRegion] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCachedRegions(loadOfflineItem<string[]>('cachedMapRegions', ['EU', 'NA']));
+    setCachedPacks(loadOfflineItem<Record<string, OfflineMapPack>>('cachedMapPacks', {}));
+  }, []);
 
   const fromStation = STATIONS.find((s) => s.code === selectedFrom) || STATIONS[0];
   const toStation = STATIONS.find((s) => s.code === selectedTo) || STATIONS[4];

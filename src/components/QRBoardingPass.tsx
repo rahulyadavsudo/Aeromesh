@@ -74,7 +74,10 @@ export const QRBoardingPass: React.FC<QRBoardingPassProps> = ({ booking, simulat
               <div className="text-xs text-slate-500 dark:text-slate-400">Departs {booking.flight.departureTime}</div>
             </div>
             <div className="flex-1 px-4 text-center">
-              <div className="text-xs font-mono text-slate-400">{booking.travelDate}</div>
+              <div className="text-xs font-mono text-slate-400">
+                {booking.travelDate}
+                {booking.flight.stops > 0 ? ` · Via ${booking.flight.viaAirport}` : ' · Direct'}
+              </div>
               <div className="my-1.5 h-px w-full bg-slate-200 dark:bg-slate-700" />
               <div className={`text-xs font-semibold ${statusTone}`}>{booking.flight.status}</div>
             </div>
@@ -83,6 +86,18 @@ export const QRBoardingPass: React.FC<QRBoardingPassProps> = ({ booking, simulat
               <div className="text-xs text-slate-500 dark:text-slate-400">Arrives {booking.flight.arrivalTime}</div>
             </div>
           </div>
+
+          {booking.tripType === 'round-trip' && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs dark:border-slate-800 dark:bg-slate-950/60">
+              <span className="font-semibold text-[#0F4C81] dark:text-blue-400">Round-Trip Return Sector</span>
+              <span className="font-mono text-slate-700 dark:text-slate-300">
+                {booking.returnFlight
+                  ? `${booking.returnFlight.flightNumber} · ${booking.returnFlight.from} → ${booking.returnFlight.to} (${booking.returnFlight.departureTime})`
+                  : `${booking.flight.to} → ${booking.flight.from}`}
+                {booking.returnDate ? ` · ${booking.returnDate}` : ''}
+              </span>
+            </div>
+          )}
 
           <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4 border-t border-slate-100 pt-4 dark:border-slate-800">
             <div>
@@ -118,7 +133,7 @@ export const QRBoardingPass: React.FC<QRBoardingPassProps> = ({ booking, simulat
                 </span>
               </div>
               <span className="font-mono font-semibold text-[#0F4C81] dark:text-blue-400">
-                ETA {booking.rideTransfer.etaMinutes} min · QR Entry Valid
+                ETA {booking.rideTransfer.etaMinutes} min · QR Entry Valid{booking.fareLockId ? ` · ${booking.fareLockId}` : ''}
               </span>
             </div>
           )}

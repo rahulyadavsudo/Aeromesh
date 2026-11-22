@@ -1,32 +1,50 @@
 import React, { useEffect, useState } from 'react';
 import { Briefcase, Luggage, Minus, Plus, ShieldCheck, ArrowRight } from 'lucide-react';
-import type { AircraftSeat, CabinClass, CurrencyCode, FareBreakdown, FlightOption, LuggageConfig } from '../types/travel';
+import type {
+  AircraftSeat,
+  CabinClass,
+  CurrencyCode,
+  FareBreakdown,
+  FareLockRecord,
+  FlightOption,
+  LuggageConfig,
+  TripType,
+} from '../types/travel';
 import type { TranslationSet } from '../data/i18n';
 import { convertFromUsd, formatMoney } from '../utils/formatters';
 import { SeatSelection } from './SeatSelection';
 
 interface FareLuggageCalculatorProps {
   selectedFlight: FlightOption;
+  returnFlight?: FlightOption | null;
+  tripType: TripType;
+  onTripTypeChange: (next: TripType) => void;
   travelDate: string;
+  returnDate?: string;
   currency: CurrencyCode;
   cabin: CabinClass;
   onCabinChange: (cabin: CabinClass) => void;
   luggage: LuggageConfig;
   onLuggageChange: (next: LuggageConfig) => void;
   selectedSeat: AircraftSeat | null;
-  onSelectSeat: (seat: AircraftSeat) => void;
+  onSelectSeat: (seat: AircraftSeat | null) => void;
   passengersCount: number;
   onPassengersChange: (count: number) => void;
   lowBandwidth: boolean;
   simulatedOffline: boolean;
   isAuthenticated: boolean;
+  activeFareLock?: FareLockRecord | null;
   t: TranslationSet;
   onProceedToCheckout: (fare: FareBreakdown) => void;
 }
 
 export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
   selectedFlight,
+  returnFlight,
+  tripType,
+  onTripTypeChange,
   travelDate,
+  returnDate,
   currency,
   cabin,
   onCabinChange,
@@ -39,34 +57,48 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
   lowBandwidth,
   simulatedOffline,
   isAuthenticated,
+  activeFareLock,
   t,
   onProceedToCheckout,
 }) => {
   const [fare, setFare] = useState<FareBreakdown | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const returnBaseUsd = returnFlight?.basePriceUsd ?? Math.round(selectedFlight.basePriceUsd * 0.96);
+
   const computeLocalFallback = (): FareBreakdown => {
     const mult: Record<CabinClass, number> = { economy: 1, premium: 1.48, business: 2.65, first: 4.1 };
+    const isRoundTrip = tripType === 'round-trip';
     const base = selectedFlight.basePriceUsd;
-    const upgrade = base * mult[cabin] - base;
-    const taxes = (base + upgrade) * 0.14 + 28;
-    const carryOnFee = luggage.carryOnCount > 1 ? (luggage.carryOnCount - 1) * 24 : 0;
-    const checkedFee = luggage.checkedBagsCount * (cabin === 'business' || cabin === 'first' ? 0 : 42);
+    const retRaw = isRoundTrip ? returnBaseUsd : 0;
+    const rtDiscount = isRoundTrip ? Math.round(retRaw * 0.08 * 100) / 100 : 0;
+    const combinedBase = base + retRaw - rtDiscount;
+    const upgrade = combinedBase * mult[cabin] - combinedBase;
+    const taxes = (combinedBase + upgrade) * 0.14 + (isRoundTrip ? 46 : 28);
+    const legBagMult = isRoundTrip ? 1.85 : 1;
+    const carryOnFee = (luggage.carryOnCount > 1 ? (luggage.carryOnCount - 1) * 24 : 0) * legBagMult;
+    const checkedFee = luggage.checkedBagsCount * (cabin === 'business' || cabin === 'first' ? 0 : 42) * legBagMult;
     const weightFee =
-      luggage.checkedBagsCount > 0 && luggage.bagWeightKg > 23
+      (luggage.checkedBagsCount > 0 && luggage.bagWeightKg > 23
         ? luggage.checkedBagsCount * 35
         : luggage.checkedBagsCount > 0 && luggage.bagWeightKg <= 15
         ? -luggage.checkedBagsCount * 8
-        : 0;
-    const prio = (luggage.priorityHandling ? 18 : 0) + (luggage.sportsEquipment ? 55 : 0);
+        : 0) * legBagMult;
+    const prio = ((luggage.priorityHandling ? 18 : 0) + (luggage.sportsEquipment ? 55 : 0)) * legBagMult;
 
-    const noLuggage = convertFromUsd((base + upgrade + taxes) * passengersCount, currency);
-    const withLuggage = convertFromUsd((base + upgrade + taxes + carryOnFee + checkedFee + weightFee + prio) * passengersCount, currency);
+    const noLuggage = convertFromUsd((combinedBase + upgrade + taxes) * passengersCount, currency);
+    const withLuggage = convertFromUsd(
+      (combinedBase + upgrade + taxes + carryOnFee + checkedFee + weightFee + prio) * passengersCount,
+      currency
+    );
 
     return {
       currency,
       fxRate: 1,
+      tripType,
       baseFare: convertFromUsd(base * passengersCount, currency),
+      returnBaseFare: isRoundTrip ? convertFromUsd(retRaw * passengersCount, currency) : 0,
+      roundTripDiscount: isRoundTrip ? convertFromUsd(rtDiscount * passengersCount, currency) : 0,
       cabinUpgrade: convertFromUsd(upgrade * passengersCount, currency),
       taxesAndFees: convertFromUsd(taxes * passengersCount, currency),
       carryOnFee: convertFromUsd(carryOnFee * passengersCount, currency),
@@ -76,7 +108,7 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
       totalWithoutLuggage: noLuggage,
       totalWithLuggage: withLuggage,
       luggageDelta: Math.round((withLuggage - noLuggage) * 100) / 100,
-      perPassengerTotal: convertFromUsd(base + upgrade + taxes + carryOnFee + checkedFee + weightFee + prio, currency),
+      perPassengerTotal: convertFromUsd(combinedBase + upgrade + taxes + carryOnFee + checkedFee + weightFee + prio, currency),
       passengers: passengersCount,
       payloadBytesSavedInLowBandwidth: lowBandwidth ? 1480 : 0,
     };
@@ -99,6 +131,8 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
           },
           body: JSON.stringify({
             basePriceUsd: selectedFlight.basePriceUsd,
+            returnBasePriceUsd: returnBaseUsd,
+            tripType,
             cabin,
             luggage,
             currency,
@@ -121,7 +155,18 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
     return () => {
       active = false;
     };
-  }, [selectedFlight.id, selectedFlight.basePriceUsd, cabin, luggage, currency, passengersCount, lowBandwidth, simulatedOffline]);
+  }, [
+    selectedFlight.id,
+    selectedFlight.basePriceUsd,
+    returnBaseUsd,
+    tripType,
+    cabin,
+    luggage,
+    currency,
+    passengersCount,
+    lowBandwidth,
+    simulatedOffline,
+  ]);
 
   const activeFare = fare || computeLocalFallback();
 
@@ -136,8 +181,35 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
             {t.fareLabSubtitle}
           </p>
         </div>
-        <div className="text-xs font-mono text-slate-500 dark:text-slate-400">
-          {selectedFlight.flightNumber} · {selectedFlight.from} → {selectedFlight.to} · {selectedFlight.aircraft}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800" role="group" aria-label="Trip Type in Fare Lab">
+            <button
+              type="button"
+              onClick={() => onTripTypeChange('one-way')}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                tripType === 'one-way'
+                  ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+              }`}
+            >
+              One-Way
+            </button>
+            <button
+              type="button"
+              onClick={() => onTripTypeChange('round-trip')}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                tripType === 'round-trip'
+                  ? 'bg-white text-[#0F4C81] shadow-sm dark:bg-slate-900 dark:text-blue-400'
+                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+              }`}
+            >
+              Round-Trip (-8%)
+            </button>
+          </div>
+          <div className="text-xs font-mono text-slate-500 dark:text-slate-400">
+            {selectedFlight.flightNumber} · {selectedFlight.from} {tripType === 'round-trip' ? '⇄' : '→'} {selectedFlight.to}
+            {selectedFlight.stops > 0 ? ` (via ${selectedFlight.viaAirport})` : ' (Direct)'}
+          </div>
         </div>
       </div>
 
@@ -371,11 +443,31 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
 
             <dl className="mt-4 space-y-2.5 text-sm">
               <div className="flex justify-between">
-                <dt className="text-slate-600 dark:text-slate-400">Base Flight Fare ({passengersCount}x)</dt>
+                <dt className="text-slate-600 dark:text-slate-400">
+                  Outbound ({selectedFlight.stops === 0 ? 'Direct' : `Via ${selectedFlight.viaAirport}`} · {passengersCount}x)
+                </dt>
                 <dd className="font-mono font-medium tabular-nums text-slate-900 dark:text-slate-100">
                   {formatMoney(activeFare.baseFare, activeFare.currency)}
                 </dd>
               </div>
+              {tripType === 'round-trip' && (activeFare.returnBaseFare ?? 0) > 0 && (
+                <>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-600 dark:text-slate-400">
+                      Return ({returnFlight ? returnFlight.flightNumber : `${selectedFlight.to} → ${selectedFlight.from}`} · {returnDate || 'Return'})
+                    </dt>
+                    <dd className="font-mono font-medium tabular-nums text-slate-900 dark:text-slate-100">
+                      {formatMoney(activeFare.returnBaseFare || 0, activeFare.currency)}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-emerald-700 dark:text-emerald-400">Round-Trip Bundle Savings (-8%)</dt>
+                    <dd className="font-mono font-medium tabular-nums text-emerald-700 dark:text-emerald-400">
+                      -{formatMoney(activeFare.roundTripDiscount || 0, activeFare.currency)}
+                    </dd>
+                  </div>
+                </>
+              )}
               {activeFare.cabinUpgrade > 0 && (
                 <div className="flex justify-between">
                   <dt className="text-slate-600 dark:text-slate-400 capitalize">{cabin} Cabin Upgrade</dt>
@@ -392,7 +484,7 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
               </div>
               <div className="flex justify-between">
                 <dt className="text-slate-600 dark:text-slate-400">
-                  Checked Baggage ({luggage.checkedBagsCount} × {luggage.bagWeightKg} kg)
+                  Checked Baggage ({luggage.checkedBagsCount} × {luggage.bagWeightKg} kg{tripType === 'round-trip' ? ' · RT bundle' : ''})
                 </dt>
                 <dd className="font-mono font-medium tabular-nums text-slate-900 dark:text-slate-100">
                   {formatMoney(activeFare.checkedLuggageFee + activeFare.weightSurcharge, activeFare.currency)}
@@ -416,6 +508,14 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
                     : 'Included'}
                 </dd>
               </div>
+              {activeFareLock && activeFareLock.status === 'Active' && (
+                <div className="flex justify-between text-xs">
+                  <dt className="text-emerald-700 dark:text-emerald-400">48h Fare Lock Protected</dt>
+                  <dd className="font-mono font-semibold text-emerald-700 dark:text-emerald-400">
+                    {activeFareLock.lockId}
+                  </dd>
+                </div>
+              )}
               <div className="flex justify-between border-t border-slate-200 pt-3 text-base font-bold dark:border-slate-800">
                 <dt className="text-slate-900 dark:text-white">Total Payable</dt>
                 <dd className="font-mono text-[#0F4C81] tabular-nums dark:text-blue-400">
@@ -457,7 +557,8 @@ export const FareLuggageCalculator: React.FC<FareLuggageCalculatorProps> = ({
         travelDate={travelDate}
         cabin={cabin}
         currency={currency}
-        selectedSeat={selectedSeat?.id || ''}
+        passengersCount={passengersCount}
+        selectedSeat={selectedSeat}
         onSelectSeat={onSelectSeat}
         simulatedOffline={simulatedOffline}
       />

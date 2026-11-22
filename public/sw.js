@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aeromesh-offline-v2';
+const CACHE_NAME = 'aeromesh-offline-v3';
 const OFFLINE_ASSETS = [
   '/manifest.webmanifest',
   '/icon.svg',
@@ -49,7 +49,7 @@ self.addEventListener('fetch', (event) => {
             }
             return res;
           })
-          .catch(() => cached);
+          .catch(() => cached || new Response(JSON.stringify({ offline: true }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
         return cached || networkPromise;
       })
     );

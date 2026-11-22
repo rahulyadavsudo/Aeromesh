@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import {
   ArrowLeftRight,
+  ArrowRight,
   BarChart3,
   Bell,
   Briefcase,
@@ -11,10 +12,13 @@ import {
   Calendar,
   Globe,
   LogIn,
+  Minus,
   Moon,
   Plane,
+  Plus,
   QrCode,
   Search,
+  ShieldCheck,
   Sun,
   User,
   Wifi,
@@ -30,13 +34,17 @@ import type {
   BookingRecord,
   CabinClass,
   CurrencyCode,
+  DoorToDoorTransferMode,
   FareBreakdown,
+  FareLockRecord,
   FlightOption,
   KafkaEventRecord,
   LanguageCode,
   LuggageConfig,
   NotificationEvent,
   PassengerProfile,
+  RoutingPreference,
+  TripType,
 } from './types/travel';
 import { convertFromUsd, formatDuration, formatMoney, formatShortTime, loadOfflineItem, saveOfflineItem } from './utils/formatters';
 import { StationAutocomplete } from './components/StationAutocomplete';
@@ -49,6 +57,8 @@ import { ProfileAndTrips } from './components/ProfileAndTrips';
 import { MicroservicesConsole } from './components/MicroservicesConsole';
 import { AuthView } from './components/AuthView';
 import { IndiaAirportList } from './components/IndiaAirportList';
+import { SeatSelection } from './components/SeatSelection';
+import { UniqueTravelSuite } from './components/UniqueTravelSuite';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
 
 type ActiveTab = 'book' | 'fare-lab' | 'passes' | 'analytics' | 'architecture' | 'profile' | 'auth';
@@ -71,15 +81,27 @@ export default function App() {
   // Search state
   const [fromCode, setFromCode] = useState('JFK');
   const [toCode, setToCode] = useState('LHR');
+  const [tripType, setTripType] = useState<TripType>('one-way');
+  const [routingType, setRoutingType] = useState<RoutingPreference>('all');
   const [travelDate, setTravelDate] = useState('2026-11-24');
+  const [returnDate, setReturnDate] = useState('2026-11-28');
   const [cabin, setCabin] = useState<CabinClass>('economy');
   const [passengersCount, setPassengersCount] = useState(1);
   const [flights, setFlights] = useState<FlightOption[]>(FLIGHTS_CATALOG.filter((f) => f.from === 'JFK' && f.to === 'LHR'));
+  const [returnFlights, setReturnFlights] = useState<FlightOption[]>(
+    FLIGHTS_CATALOG.filter((f) => f.from === 'LHR' && f.to === 'JFK')
+  );
   const [searching, setSearching] = useState(false);
   const [swapCount, setSwapCount] = useState(0);
 
-  // Selected flight, luggage & aircraft seat configuration
+  // Selected flight, return flight, 48h fare lock, transit/shield, luggage & seat
   const [selectedFlight, setSelectedFlight] = useState<FlightOption>(FLIGHTS_CATALOG[0]);
+  const [selectedReturnFlight, setSelectedReturnFlight] = useState<FlightOption | null>(
+    FLIGHTS_CATALOG.find((f) => f.from === 'LHR' && f.to === 'JFK') || null
+  );
+  const [activeFareLock, setActiveFareLock] = useState<FareLockRecord | null>(null);
+  const [transferMode, setTransferMode] = useState<DoorToDoorTransferMode>('airport-only');
+  const [connectionShield, setConnectionShield] = useState<boolean>(false);
   const [selectedSeat, setSelectedSeat] = useState<AircraftSeat | null>({
     id: '7A',
     row: 7,
@@ -174,8 +196,9 @@ export default function App() {
       fetch('/api/passengers').then((r) => (r.ok ? r.json() : null)),
       fetch('/api/notifications').then((r) => (r.ok ? r.json() : null)),
       fetch('/api/events/kafka').then((r) => (r.ok ? r.json() : null)),
+      fetch('/api/fares/locks').then((r) => (r.ok ? r.json() : null)),
     ])
-      .then(([bData, pData, nData, kData]) => {
+      .then(([bData, pData, nData, kData, lData]) => {
         if (bData?.bookings) {
           setBookings(bData.bookings);
           saveOfflineItem('bookings', bData.bookings);
@@ -186,6 +209,10 @@ export default function App() {
         if (pData?.passengers) setPassengers(pData.passengers);
         if (nData?.notifications) setNotifications(nData.notifications);
         if (kData?.events) setKafkaEvents(kData.events);
+        if (Array.isArray(lData?.locks)) {
+          const active = (lData.locks as FareLockRecord[]).find((l) => l.status === 'Active') || null;
+          setActiveFareLock(active);
+        }
       })
       .catch(() => {});
   }, [simulatedOffline]);
@@ -265,21 +292,135 @@ export default function App() {
     };
   }, [simulatedOffline]);
 
-  const runFlightSearch = async (origin: string, destination: string) => {
+  const buildOfflineRouteMatches = (origin: string, destination: string, routing: RoutingPreference): FlightOption[] => {
+    let matches = FLIGHTS_CATALOG.filter((f) => f.from === origin && f.to === destination);
+    const orig = STATIONS.find((s) => s.code === origin);
+    const dest = STATIONS.find((s) => s.code === destination);
+
+    if (orig && dest && origin !== destination) {
+      const dLat = (dest.lat - orig.lat) * 111;
+      const dLng = (dest.lng - orig.lng) * 85;
+      const distKm = Math.max(320, Math.round(Math.hypot(dLat, dLng)));
+      const durationMin = Math.max(70, Math.round((distKm / 820) * 60 + 35));
+      const directBaseUsd = Math.max(85, Math.round(52 + distKm * 0.068));
+
+      if (!matches.some((f) => f.stops === 0)) {
+        matches = [
+          ...matches,
+          {
+            id: `OFF-${origin}${destination}-DIR`,
+            flightNumber: `AM ${110 + ((origin.charCodeAt(0) + destination.charCodeAt(0)) % 780)}`,
+            airline: orig.country === 'India' && dest.country === 'India' ? 'IndiMesh Express' : 'AeroMesh Direct',
+            airlineCode: orig.country === 'India' && dest.country === 'India' ? 'IM' : 'AM',
+            from: origin,
+            to: destination,
+            departureTime: '08:50',
+            arrivalTime: durationMin > 480 ? '20:40+1' : '13:15',
+            durationMinutes: durationMin,
+            distanceKm: distKm,
+            aircraft: distKm > 3500 ? 'Airbus A350-900' : 'Airbus A321neo',
+            terminal: orig.terminals[0] || 'T1',
+            gate: 'B14',
+            status: 'On Time',
+            basePriceUsd: directBaseUsd,
+            stops: 0,
+            co2Kg: Math.round(distKm * 0.075),
+            seatsRemaining: 12,
+          },
+        ];
+      }
+
+      if (!matches.some((f) => f.stops > 0)) {
+        const bothIndia = orig.country === 'India' && dest.country === 'India';
+        const viaCode = (bothIndia ? ['HYD', 'BOM', 'DEL', 'AMD', 'BLR'] : ['DXB', 'FRA', 'SIN', 'ORD', 'DEL']).find(
+          (c) => c !== origin && c !== destination
+        ) || 'DXB';
+        const viaStation = STATIONS.find((s) => s.code === viaCode);
+        const refDirect = matches.find((f) => f.stops === 0)?.basePriceUsd ?? directBaseUsd;
+        const layoverMin = bothIndia ? 75 : 105;
+
+        matches = [
+          ...matches,
+          {
+            id: `OFF-${origin}${destination}-VIA`,
+            flightNumber: `AM ${620 + ((origin.charCodeAt(1) + destination.charCodeAt(1)) % 350)}`,
+            airline: bothIndia ? 'IndiMesh Connect' : 'AeroMesh Hub Connect',
+            airlineCode: 'AC',
+            from: origin,
+            to: destination,
+            departureTime: '13:40',
+            arrivalTime: durationMin + layoverMin + 45 > 540 ? '06:15+1' : '21:10',
+            durationMinutes: durationMin + layoverMin + 40,
+            distanceKm: Math.round(distKm * 1.14),
+            aircraft: 'Boeing 787-9',
+            terminal: orig.terminals[orig.terminals.length - 1] || 'T2',
+            gate: 'C07',
+            status: 'On Time',
+            basePriceUsd: Math.max(48, Math.round(refDirect * 0.78)),
+            stops: 1,
+            viaAirport: viaCode,
+            viaCity: viaStation?.city || viaCode,
+            layoverMinutes: layoverMin,
+            co2Kg: Math.round(distKm * 1.14 * 0.078),
+            seatsRemaining: 18,
+          },
+        ];
+      }
+    }
+
+    if (routing === 'direct') return matches.filter((f) => f.stops === 0);
+    if (routing === 'via') return matches.filter((f) => f.stops > 0);
+    return matches;
+  };
+
+  const runFlightSearch = async (
+    origin: string,
+    destination: string,
+    nextRouting: RoutingPreference = routingType,
+    nextTripType: TripType = tripType
+  ) => {
     setSearching(true);
     try {
       if (!simulatedOffline && navigator.onLine) {
         const res = await fetch(
-          `/api/flights/search?from=${encodeURIComponent(origin)}&to=${encodeURIComponent(destination)}`,
+          `/api/flights/search?from=${encodeURIComponent(origin)}&to=${encodeURIComponent(destination)}&routing=${encodeURIComponent(nextRouting)}&tripType=${encodeURIComponent(nextTripType)}`,
           { headers: lowBandwidth ? { 'x-bandwidth-mode': 'low' } : {} }
         );
         if (res.ok) {
           const data = await res.json();
-          setFlights(data.flights || []);
+          const nextFlights = (data.flights || []) as FlightOption[];
+          const nextReturns = (data.returnFlights || []) as FlightOption[];
+          setFlights(nextFlights);
+          if (nextFlights.length > 0) {
+            setSelectedFlight((prev) => nextFlights.find((f) => f.id === prev.id) || nextFlights[0]);
+          }
+          setReturnFlights(nextReturns);
+          if (nextTripType === 'round-trip') {
+            setSelectedReturnFlight((prev) =>
+              prev && nextReturns.some((r) => r.id === prev.id) ? prev : nextReturns[0] || null
+            );
+          } else {
+            setSelectedReturnFlight(null);
+          }
           return;
         }
       }
-      setFlights(FLIGHTS_CATALOG.filter((f) => f.from === origin && f.to === destination));
+
+      const localMatches = buildOfflineRouteMatches(origin, destination, nextRouting);
+      setFlights(localMatches);
+      if (localMatches.length > 0) {
+        setSelectedFlight((prev) => localMatches.find((f) => f.id === prev.id) || localMatches[0]);
+      }
+      if (nextTripType === 'round-trip') {
+        const localReturns = buildOfflineRouteMatches(destination, origin, nextRouting);
+        setReturnFlights(localReturns);
+        setSelectedReturnFlight((prev) =>
+          prev && localReturns.some((r) => r.id === prev.id) ? prev : localReturns[0] || null
+        );
+      } else {
+        setReturnFlights([]);
+        setSelectedReturnFlight(null);
+      }
     } finally {
       setSearching(false);
     }
@@ -287,7 +428,28 @@ export default function App() {
 
   const handleSearchFlights = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    await runFlightSearch(fromCode, toCode);
+    await runFlightSearch(fromCode, toCode, routingType, tripType);
+  };
+
+  const handleTripTypeChange = (nextTrip: TripType) => {
+    setTripType(nextTrip);
+    void runFlightSearch(fromCode, toCode, routingType, nextTrip);
+  };
+
+  const handleRoutingTypeChange = (nextRouting: RoutingPreference) => {
+    setRoutingType(nextRouting);
+    void runFlightSearch(fromCode, toCode, nextRouting, tripType);
+  };
+
+  const handleSelectTravelDate = (nextDate: string) => {
+    setTravelDate(nextDate);
+    if (returnDate <= nextDate) {
+      const d = new Date(`${nextDate}T12:00:00Z`);
+      if (!Number.isNaN(d.getTime())) {
+        d.setUTCDate(d.getUTCDate() + 4);
+        setReturnDate(d.toISOString().slice(0, 10));
+      }
+    }
   };
 
   const handleQuickCorridor = (origin: string, destination: string, preferCurrency?: CurrencyCode) => {
@@ -296,14 +458,16 @@ export default function App() {
     if (preferCurrency) {
       setCurrency(preferCurrency);
     }
-    void runFlightSearch(origin, destination);
+    void runFlightSearch(origin, destination, routingType, tripType);
   };
 
   const handleSwapStations = () => {
     const prevFrom = fromCode;
-    setFromCode(toCode);
+    const prevTo = toCode;
+    setFromCode(prevTo);
     setToCode(prevFrom);
     setSwapCount((c) => c + 1);
+    void runFlightSearch(prevTo, prevFrom, routingType, tripType);
   };
 
   const maybeSwitchInrForIndiaRoute = (origin: string, destination: string) => {
@@ -319,7 +483,7 @@ export default function App() {
     setFromCode(code);
     setToCode(nextDest);
     maybeSwitchInrForIndiaRoute(code, nextDest);
-    void runFlightSearch(code, nextDest);
+    void runFlightSearch(code, nextDest, routingType, tripType);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -328,7 +492,7 @@ export default function App() {
     setFromCode(nextOrigin);
     setToCode(code);
     maybeSwitchInrForIndiaRoute(nextOrigin, code);
-    void runFlightSearch(nextOrigin, code);
+    void runFlightSearch(nextOrigin, code, routingType, tripType);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -337,14 +501,73 @@ export default function App() {
     setActiveTab('fare-lab');
   };
 
+  const computeExpressBreakdown = (): FareBreakdown => {
+    const mult: Record<CabinClass, number> = { economy: 1, premium: 1.48, business: 2.65, first: 4.1 };
+    const isRoundTrip = tripType === 'round-trip';
+    const base = selectedFlight.basePriceUsd;
+    const retRaw = isRoundTrip
+      ? selectedReturnFlight && selectedReturnFlight.from === selectedFlight.to && selectedReturnFlight.to === selectedFlight.from
+        ? selectedReturnFlight.basePriceUsd
+        : Math.round(base * 0.96)
+      : 0;
+    const rtDiscount = isRoundTrip ? Math.round(retRaw * 0.08 * 100) / 100 : 0;
+    const combinedBase = base + retRaw - rtDiscount;
+    const upgrade = combinedBase * mult[cabin] - combinedBase;
+    const taxes = (combinedBase + upgrade) * 0.14 + (isRoundTrip ? 46 : 28);
+    const legBagMult = isRoundTrip ? 1.85 : 1;
+    const carryOnFee = (luggage.carryOnCount > 1 ? (luggage.carryOnCount - 1) * 24 : 0) * legBagMult;
+    const checkedFee = luggage.checkedBagsCount * (cabin === 'business' || cabin === 'first' ? 0 : 42) * legBagMult;
+    const weightFee =
+      (luggage.checkedBagsCount > 0 && luggage.bagWeightKg > 23
+        ? luggage.checkedBagsCount * 35
+        : luggage.checkedBagsCount > 0 && luggage.bagWeightKg <= 15
+        ? -luggage.checkedBagsCount * 8
+        : 0) * legBagMult;
+    const prio = ((luggage.priorityHandling ? 18 : 0) + (luggage.sportsEquipment ? 55 : 0)) * legBagMult;
+
+    const noLuggage = convertFromUsd((combinedBase + upgrade + taxes) * passengersCount, currency);
+    const withLuggage = convertFromUsd(
+      (combinedBase + upgrade + taxes + carryOnFee + checkedFee + weightFee + prio) * passengersCount,
+      currency
+    );
+
+    return {
+      currency,
+      fxRate: CURRENCY_RATES[currency]?.rate || 1,
+      tripType,
+      baseFare: convertFromUsd(base * passengersCount, currency),
+      returnBaseFare: isRoundTrip ? convertFromUsd(retRaw * passengersCount, currency) : 0,
+      roundTripDiscount: isRoundTrip ? convertFromUsd(rtDiscount * passengersCount, currency) : 0,
+      cabinUpgrade: convertFromUsd(upgrade * passengersCount, currency),
+      taxesAndFees: convertFromUsd(taxes * passengersCount, currency),
+      carryOnFee: convertFromUsd(carryOnFee * passengersCount, currency),
+      checkedLuggageFee: convertFromUsd(checkedFee * passengersCount, currency),
+      weightSurcharge: convertFromUsd(weightFee * passengersCount, currency),
+      priorityFee: convertFromUsd(prio * passengersCount, currency),
+      totalWithoutLuggage: noLuggage,
+      totalWithLuggage: withLuggage,
+      luggageDelta: Math.round((withLuggage - noLuggage) * 100) / 100,
+      perPassengerTotal: convertFromUsd(
+        combinedBase + upgrade + taxes + carryOnFee + checkedFee + weightFee + prio,
+        currency
+      ),
+      passengers: passengersCount,
+      payloadBytesSavedInLowBandwidth: lowBandwidth ? 1480 : 0,
+    };
+  };
+
+  const getAddonsUsdTotal = () => {
+    const seatUsd = selectedSeat && selectedSeat.feeDeltaUsd > 0 ? selectedSeat.feeDeltaUsd * passengersCount : 0;
+    const transferUsd = transferMode === 'city-cab' ? 28 : transferMode === 'express-rail' ? 6 * passengersCount : 0;
+    const shieldUsd = connectionShield ? 14 * passengersCount : 0;
+    return seatUsd + transferUsd + shieldUsd;
+  };
+
   const handleOpenCheckout = (fare: FareBreakdown) => {
-    const seatExtra =
-      selectedSeat && selectedSeat.feeDeltaUsd > 0
-        ? convertFromUsd(selectedSeat.feeDeltaUsd * passengersCount, fare.currency)
-        : 0;
+    const addonsExtra = convertFromUsd(getAddonsUsdTotal(), fare.currency);
     const adjustedFare: FareBreakdown = {
       ...fare,
-      totalWithLuggage: Math.round((fare.totalWithLuggage + seatExtra) * 100) / 100,
+      totalWithLuggage: Math.round((fare.totalWithLuggage + addonsExtra) * 100) / 100,
     };
 
     if (!authUser || !authToken) {
@@ -393,6 +616,7 @@ export default function App() {
       saveOfflineItem('bookings', next);
       return next;
     });
+    setActiveFareLock(null);
     setActivePassPnr(newBooking.pnr);
     setActiveTab('passes');
   };
@@ -442,9 +666,17 @@ export default function App() {
 
   const computeQuickTotals = (flight: FlightOption) => {
     const mult: Record<CabinClass, number> = { economy: 1, premium: 1.48, business: 2.65, first: 4.1 };
-    const subtotal = flight.basePriceUsd * mult[cabin];
-    const taxes = subtotal * 0.14 + 28;
-    const bagFee = cabin === 'business' || cabin === 'first' ? 0 : 42;
+    const isRoundTrip = tripType === 'round-trip';
+    const retUsd = isRoundTrip
+      ? selectedReturnFlight && selectedReturnFlight.from === flight.to && selectedReturnFlight.to === flight.from
+        ? selectedReturnFlight.basePriceUsd
+        : Math.round(flight.basePriceUsd * 0.96)
+      : 0;
+    const rtDiscount = isRoundTrip ? Math.round(retUsd * 0.08 * 100) / 100 : 0;
+    const combinedBase = flight.basePriceUsd + retUsd - rtDiscount;
+    const subtotal = combinedBase * mult[cabin];
+    const taxes = subtotal * 0.14 + (isRoundTrip ? 46 : 28);
+    const bagFee = (cabin === 'business' || cabin === 'first' ? 0 : 42) * (isRoundTrip ? 1.85 : 1);
     return {
       light: convertFromUsd((subtotal + taxes) * passengersCount, currency),
       withBag: convertFromUsd((subtotal + taxes + bagFee) * passengersCount, currency),
@@ -699,19 +931,66 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8 space-y-10">
-        <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={activeTab}
-          initial={{ opacity: 0, y: 8 }}
+          initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
           className="space-y-10"
         >
         {activeTab === 'book' && (
           <>
+            {/* Quick 3-Step Guided Booking Strip */}
+            <section
+              aria-label="Booking progress"
+              className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-white p-2.5 sm:grid-cols-3 dark:border-slate-800 dark:bg-slate-900"
+            >
+              <a
+                href="#search-form-section"
+                className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3.5 py-2.5 text-left hover:bg-slate-100 dark:bg-slate-950/60 dark:hover:bg-slate-800/80 transition-colors"
+              >
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">01. Route &amp; Travelers</div>
+                  <div className="font-mono text-xs font-bold text-slate-900 dark:text-white">
+                    {fromCode} {tripType === 'round-trip' ? '⇄' : '→'} {toCode} · {passengersCount} pax
+                  </div>
+                </div>
+              </a>
+
+              <a
+                href="#flights-list-heading"
+                className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3.5 py-2.5 text-left hover:bg-slate-100 dark:bg-slate-950/60 dark:hover:bg-slate-800/80 transition-colors"
+              >
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">02. Flight &amp; Seat</div>
+                  <div className="font-mono text-xs font-bold text-[#0F4C81] dark:text-blue-400">
+                    {selectedFlight.flightNumber} · Seat {selectedSeat?.id || 'Auto'}
+                  </div>
+                </div>
+              </a>
+
+              <button
+                type="button"
+                onClick={() => handleOpenCheckout(computeExpressBreakdown())}
+                className="flex items-center justify-between gap-3 rounded-lg bg-[#0F4C81] px-3.5 py-2.5 text-left text-white hover:bg-[#0B3A63] transition-colors"
+              >
+                <div>
+                  <div className="text-[11px] text-sky-100">03. Instant Book Now</div>
+                  <div className="font-mono text-xs font-bold tabular-nums">
+                    {formatMoney(
+                      Math.round(
+                        (computeExpressBreakdown().totalWithLuggage + convertFromUsd(getAddonsUsdTotal(), currency)) * 100
+                      ) / 100,
+                      currency
+                    )}
+                  </div>
+                </div>
+                <ArrowRight className="h-4 w-4 shrink-0" aria-hidden="true" />
+              </button>
+            </section>
+
             {/* Hero + Flight Search Split */}
-            <section className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
+            <section id="search-form-section" className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
               <motion.div
                 initial={{ y: 12 }}
                 animate={{ y: 0 }}
@@ -720,7 +999,7 @@ export default function App() {
               >
                 <div>
                   <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                    10-Service Polyglot Flight &amp; Rail Engine · Offline PWA Ready
+                    14-Service Polyglot Flight &amp; Rail Engine · API Gateway &amp; Rate Limiter · Offline PWA
                   </div>
                   <h1 className="mt-2 text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white sm:text-4xl [text-wrap:balance]">
                     {t.heroTitle}
@@ -732,6 +1011,57 @@ export default function App() {
 
                 {/* Flight & Station Autocomplete Search Form */}
                 <form onSubmit={handleSearchFlights} className="mt-6 space-y-4 border-t border-slate-100 pt-6 dark:border-slate-800">
+                  {/* Trip Type & Routing Preference Controls */}
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div role="group" aria-label="Trip type" className="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => handleTripTypeChange('one-way')}
+                        className={`min-h-[34px] rounded-md px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                          tripType === 'one-way'
+                            ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+                            : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+                        }`}
+                      >
+                        One-Way
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleTripTypeChange('round-trip')}
+                        className={`min-h-[34px] rounded-md px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                          tripType === 'round-trip'
+                            ? 'bg-white text-[#0F4C81] shadow-sm dark:bg-slate-900 dark:text-blue-400'
+                            : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+                        }`}
+                      >
+                        Round-Trip (-8%)
+                      </button>
+                    </div>
+
+                    <div role="group" aria-label="Routing preference" className="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                      {(
+                        [
+                          { id: 'all', label: 'All Routes' },
+                          { id: 'direct', label: 'Direct Only' },
+                          { id: 'via', label: 'Via Hub (Lower Fare)' },
+                        ] as { id: RoutingPreference; label: string }[]
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => handleRoutingTypeChange(opt.id)}
+                          className={`min-h-[34px] rounded-md px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                            routingType === opt.id
+                              ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+                              : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-11 items-end">
                     <div className="sm:col-span-5">
                       <StationAutocomplete
@@ -772,27 +1102,48 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 items-end">
+                  <div className={`grid grid-cols-1 gap-3 items-end ${tripType === 'round-trip' ? 'sm:grid-cols-2 lg:grid-cols-5' : 'sm:grid-cols-2 lg:grid-cols-4'}`}>
                     <div>
-                      <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                      <label htmlFor="departure-date-input" className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
                         {t.dateLabel}
                       </label>
                       <div className="relative">
                         <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
                         <input
+                          id="departure-date-input"
                           type="date"
                           value={travelDate}
-                          onChange={(e) => setTravelDate(e.target.value)}
+                          onChange={(e) => handleSelectTravelDate(e.target.value)}
                           className="w-full min-h-[44px] rounded-lg border border-slate-300 bg-white pl-9 pr-3 py-2 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                         />
                       </div>
                     </div>
 
+                    {tripType === 'round-trip' && (
+                      <div>
+                        <label htmlFor="return-date-input" className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                          Return Date
+                        </label>
+                        <div className="relative">
+                          <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                          <input
+                            id="return-date-input"
+                            type="date"
+                            min={travelDate}
+                            value={returnDate}
+                            onChange={(e) => setReturnDate(e.target.value)}
+                            className="w-full min-h-[44px] rounded-lg border border-slate-300 bg-white pl-9 pr-3 py-2 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                          />
+                        </div>
+                      </div>
+                    )}
+
                     <div>
-                      <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                      <label htmlFor="cabin-select" className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
                         {t.cabinLabel}
                       </label>
                       <select
+                        id="cabin-select"
                         value={cabin}
                         onChange={(e) => setCabin(e.target.value as CabinClass)}
                         className="w-full min-h-[44px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium capitalize dark:border-slate-700 dark:bg-slate-900 dark:text-white"
@@ -804,10 +1155,37 @@ export default function App() {
                       </select>
                     </div>
 
+                    <div>
+                      <span className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                        Travelers
+                      </span>
+                      <div className="flex min-h-[44px] items-center justify-between rounded-lg border border-slate-300 bg-white px-2.5 dark:border-slate-700 dark:bg-slate-900">
+                        <button
+                          type="button"
+                          aria-label="Decrease travelers"
+                          onClick={() => setPassengersCount((p) => Math.max(1, p - 1))}
+                          className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          <Minus className="h-3.5 w-3.5" />
+                        </button>
+                        <span className="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">
+                          {passengersCount}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="Increase travelers"
+                          onClick={() => setPassengersCount((p) => Math.min(6, p + 1))}
+                          className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
                     <button
                       type="submit"
                       disabled={searching}
-                      className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg bg-[#0F4C81] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0B3A63] disabled:opacity-60 transition-colors"
+                      className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg bg-[#0F4C81] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0B3A63] disabled:opacity-60 transition-colors whitespace-nowrap"
                     >
                       <Search className="h-4 w-4" aria-hidden="true" />
                       <span>{searching ? 'Searching…' : t.searchFlights}</span>
@@ -924,27 +1302,62 @@ export default function App() {
               </motion.div>
             </section>
 
-            {/* Available Flights List with Light (No Luggage) vs Standard (+Luggage) comparison */}
+            {/* Available Flights List with Direct vs Via & One-Way vs Round-Trip pricing */}
             <section aria-labelledby="flights-list-heading" className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 id="flights-list-heading" className="text-lg font-bold text-slate-900 dark:text-white">
-                  {t.availableFlights} ({flights.length})
-                </h2>
-                <span className="font-mono text-xs text-slate-500">
-                  Showing {currency} · {cabin} cabin · {passengersCount} traveler
-                </span>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 id="flights-list-heading" className="text-lg font-bold text-slate-900 dark:text-white">
+                    {t.availableFlights} ({flights.length})
+                  </h2>
+                  <div className="font-mono text-xs text-slate-500">
+                    {tripType === 'round-trip' ? `Round-Trip (${travelDate} ⇄ ${returnDate})` : `One-Way (${travelDate})`} · {routingType === 'all' ? 'All routes' : routingType === 'direct' ? 'Direct only' : 'Via hub only'} · {currency} · {cabin} · {passengersCount} pax
+                  </div>
+                </div>
+
+                {/* 1-Click Bag Mode Switch */}
+                <div role="group" aria-label="Quick bag toggle" className="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setLuggage((prev) => ({ ...prev, checkedBagsCount: 0 }))}
+                    className={`min-h-[34px] rounded-md px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      luggage.checkedBagsCount === 0
+                        ? 'bg-white text-emerald-700 shadow-sm dark:bg-slate-900 dark:text-emerald-400'
+                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+                    }`}
+                  >
+                    Carry-On Light
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLuggage((prev) => ({ ...prev, checkedBagsCount: Math.max(1, prev.checkedBagsCount) }))}
+                    className={`min-h-[34px] rounded-md px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      luggage.checkedBagsCount > 0
+                        ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+                    }`}
+                  >
+                    +1 Checked Bag ({luggage.bagWeightKg}kg)
+                  </button>
+                </div>
               </div>
 
               {flights.length === 0 ? (
                 <div className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
                   <p className="text-sm text-slate-600 dark:text-slate-400">
-                    No departures matched {fromCode} → {toCode}. Try another hub pair or tap Search Flights.
+                    No departures matched {fromCode} → {toCode}. Try another hub pair or switch routing mode.
                   </p>
                 </div>
               ) : (
                 <div className="space-y-3">
                   {flights.map((flight, index) => {
                     const totals = computeQuickTotals(flight);
+                    const directRef = flights.find((f) => f.stops === 0);
+                    const mult: Record<CabinClass, number> = { economy: 1, premium: 1.48, business: 2.65, first: 4.1 };
+                    const viaSavingsUsd =
+                      flight.stops > 0 && directRef && directRef.basePriceUsd > flight.basePriceUsd
+                        ? (directRef.basePriceUsd - flight.basePriceUsd) * mult[cabin] * passengersCount
+                        : 0;
+                    const isSelected = selectedFlight.id === flight.id;
                     return (
                       <motion.div
                         key={flight.id}
@@ -952,13 +1365,27 @@ export default function App() {
                         animate={{ opacity: 1, y: 0 }}
                         whileHover={{ y: -2 }}
                         transition={{ duration: 0.3, delay: index * 0.07, ease: [0.16, 1, 0.3, 1] }}
-                        className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5 transition-shadow hover:shadow-md lg:flex-row lg:items-center lg:justify-between dark:border-slate-800 dark:bg-slate-900"
+                        onClick={() => setSelectedFlight(flight)}
+                        className={`flex cursor-pointer flex-col gap-4 rounded-xl border bg-white p-5 transition-shadow hover:shadow-md lg:flex-row lg:items-center lg:justify-between dark:bg-slate-900 ${
+                          isSelected
+                            ? 'border-[#0F4C81] ring-1 ring-[#0F4C81]/30 dark:border-blue-400'
+                            : 'border-slate-200 dark:border-slate-800'
+                        }`}
                       >
                         <div className="flex flex-wrap items-center gap-6">
-                          <div className="min-w-[140px]">
+                          <div className="min-w-[160px]">
                             <div className="text-sm font-bold text-slate-900 dark:text-white">{flight.airline}</div>
                             <div className="font-mono text-xs text-slate-500">
                               {flight.flightNumber} · {flight.aircraft}
+                            </div>
+                            <div className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-400">
+                              {flight.stops === 0 ? (
+                                <span className="text-[#0F4C81] dark:text-blue-400">Direct Nonstop</span>
+                              ) : (
+                                <span className="text-emerald-700 dark:text-emerald-400">
+                                  1 stop via {flight.viaCity || flight.viaAirport} ({flight.viaAirport}) · {flight.layoverMinutes || 75}m layover
+                                </span>
+                              )}
                             </div>
                           </div>
 
@@ -982,7 +1409,7 @@ export default function App() {
                                 </motion.span>
                               </div>
                               <div className="text-[11px] text-slate-500">
-                                {flight.stops === 0 ? 'Nonstop' : `${flight.stops} stop`} · {flight.co2Kg} kg CO₂
+                                {flight.stops === 0 ? 'Nonstop' : `Via ${flight.viaAirport || 'Hub'}`} · {flight.co2Kg} kg CO₂
                               </div>
                             </div>
 
@@ -998,7 +1425,9 @@ export default function App() {
                         <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-4 lg:border-t-0 lg:pt-0 dark:border-slate-800">
                           <div className="flex items-center gap-5">
                             <div>
-                              <div className="text-[11px] text-slate-500">{t.noLuggagePrice}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {t.noLuggagePrice} {viaSavingsUsd > 0 && `· Saves ${formatMoney(convertFromUsd(viaSavingsUsd, currency), currency)}`}
+                              </div>
                               <div className="font-mono text-base font-bold text-emerald-700 tabular-nums dark:text-emerald-400">
                                 {formatMoney(totals.light, currency)}
                               </div>
@@ -1015,7 +1444,10 @@ export default function App() {
                           <motion.button
                             type="button"
                             whileTap={{ scale: 0.96 }}
-                            onClick={() => handleOpenFareLabForFlight(flight)}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              handleOpenFareLabForFlight(flight);
+                            }}
                             className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-[#0F4C81] px-4 py-2 text-xs font-semibold text-white hover:bg-[#0B3A63] transition-colors whitespace-nowrap"
                           >
                             <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1027,7 +1459,150 @@ export default function App() {
                   })}
                 </div>
               )}
+
+              {/* Round-Trip Return Leg Selector */}
+              {tripType === 'round-trip' && returnFlights.length > 0 && (
+                <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                      Select Return Flight ({toCode} → {fromCode} · {returnDate})
+                    </h3>
+                    <span className="font-mono text-xs text-emerald-700 dark:text-emerald-400">
+                      Includes 8% Round-Trip Return Discount
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {returnFlights.map((ret) => {
+                      const active = selectedReturnFlight?.id === ret.id;
+                      const discountedRetFare = convertFromUsd(ret.basePriceUsd * 0.92 * passengersCount, currency);
+                      return (
+                        <button
+                          key={ret.id}
+                          type="button"
+                          onClick={() => setSelectedReturnFlight(ret)}
+                          className={`flex items-center justify-between gap-4 rounded-lg border p-3.5 text-left transition-colors ${
+                            active
+                              ? 'border-[#0F4C81] bg-sky-50/60 dark:border-blue-400 dark:bg-blue-950/30'
+                              : 'border-slate-200 bg-slate-50/50 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-950/50'
+                          }`}
+                        >
+                          <div>
+                            <div className="text-xs font-bold text-slate-900 dark:text-white">
+                              {ret.airline} · {ret.flightNumber}
+                            </div>
+                            <div className="mt-0.5 font-mono text-xs text-slate-600 dark:text-slate-300">
+                              {ret.departureTime} → {ret.arrivalTime} ({formatDuration(ret.durationMinutes)})
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                              {ret.stops === 0
+                                ? 'Direct Nonstop'
+                                : `1 stop via ${ret.viaCity || ret.viaAirport} (${ret.viaAirport}) · ${ret.layoverMinutes || 75}m layover`}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="font-mono text-sm font-bold tabular-nums text-slate-900 dark:text-white">
+                              +{formatMoney(discountedRetFare, currency)}
+                            </div>
+                            <div className="text-[11px] font-medium text-[#0F4C81] dark:text-blue-400">
+                              {active ? 'Selected Return' : 'Choose Return'}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Express 1-Click Book Summary Card */}
+              <div className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800 dark:bg-slate-900">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+                    <ShieldCheck className="h-4 w-4 text-[#0F4C81] dark:text-blue-400" aria-hidden="true" />
+                    <span>
+                      Ready to Book: {selectedFlight.flightNumber} ({selectedFlight.from} {tripType === 'round-trip' ? '⇄' : '→'} {selectedFlight.to})
+                    </span>
+                  </div>
+                  <div className="font-mono text-xs text-slate-500 dark:text-slate-400">
+                    Seat {selectedSeat?.id || 'Auto'} · {luggage.checkedBagsCount === 0 ? 'Carry-On Light' : `${luggage.checkedBagsCount} × ${luggage.bagWeightKg}kg Bag`} · {passengersCount} traveler{passengersCount > 1 ? 's' : ''}
+                    {transferMode !== 'airport-only' ? ` · ${transferMode === 'express-rail' ? 'Express Rail' : 'City Transfer'}` : ''}
+                    {connectionShield ? ' · Disruption Shield' : ''}
+                    {activeFareLock?.status === 'Active' ? ` · Hold ${activeFareLock.lockId}` : ''}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="text-right pr-2">
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">Estimated All-In Total</div>
+                    <div className="font-mono text-lg font-bold tabular-nums text-[#0F4C81] dark:text-blue-400">
+                      {formatMoney(
+                        Math.round(
+                          (computeExpressBreakdown().totalWithLuggage + convertFromUsd(getAddonsUsdTotal(), currency)) * 100
+                        ) / 100,
+                        currency
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('fare-lab')}
+                    className="min-h-[42px] rounded-lg border border-slate-300 px-3.5 py-2 text-xs font-semibold text-slate-800 hover:border-[#0F4C81] dark:border-slate-700 dark:text-slate-200 whitespace-nowrap"
+                  >
+                    Customize Bags
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenCheckout(computeExpressBreakdown())}
+                    className="inline-flex min-h-[42px] items-center gap-2 rounded-lg bg-[#0F4C81] px-4 py-2 text-xs font-semibold text-white hover:bg-[#0B3A63] transition-colors whitespace-nowrap"
+                  >
+                    <span>{authUser ? 'Instant Book Now' : 'Sign In & Book Now'}</span>
+                    <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
             </section>
+
+            {/* Unique Travel Tools: Flexible Dates, Direct vs Via, Door-to-Door Estimator, 48h Fare Lock & Group Split-Pay */}
+            <UniqueTravelSuite
+              fromCode={fromCode}
+              toCode={toCode}
+              travelDate={travelDate}
+              onSelectTravelDate={handleSelectTravelDate}
+              tripType={tripType}
+              routingType={routingType}
+              onSelectRoutingType={handleRoutingTypeChange}
+              cabin={cabin}
+              currency={currency}
+              passengersCount={passengersCount}
+              onPassengersChange={setPassengersCount}
+              flights={flights}
+              selectedFlight={selectedFlight}
+              selectedReturnFlight={selectedReturnFlight}
+              onSelectFlight={setSelectedFlight}
+              luggage={luggage}
+              selectedSeatId={selectedSeat?.id || '7A'}
+              seatFeeUsd={selectedSeat?.feeDeltaUsd || 0}
+              transferMode={transferMode}
+              onTransferModeChange={setTransferMode}
+              connectionShield={connectionShield}
+              onConnectionShieldChange={setConnectionShield}
+              activeFareLock={activeFareLock}
+              onFareLockChange={setActiveFareLock}
+              simulatedOffline={simulatedOffline}
+            />
+
+            {/* Interactive Aircraft Seating Chart synced with selectedSeat state */}
+            <SeatSelection
+              flight={selectedFlight}
+              travelDate={travelDate}
+              cabin={cabin}
+              currency={currency}
+              passengersCount={passengersCount}
+              selectedSeat={selectedSeat}
+              onSelectSeat={setSelectedSeat}
+              simulatedOffline={simulatedOffline}
+              onContinueToFareLab={() => setActiveTab('fare-lab')}
+            />
 
             {/* Visible Interactive India Airport Directory */}
             <IndiaAirportList
@@ -1042,7 +1617,11 @@ export default function App() {
         {activeTab === 'fare-lab' && (
           <FareLuggageCalculator
             selectedFlight={selectedFlight}
+            returnFlight={selectedReturnFlight}
+            tripType={tripType}
+            onTripTypeChange={handleTripTypeChange}
             travelDate={travelDate}
+            returnDate={returnDate}
             currency={currency}
             cabin={cabin}
             onCabinChange={setCabin}
@@ -1055,6 +1634,7 @@ export default function App() {
             lowBandwidth={lowBandwidth}
             simulatedOffline={simulatedOffline}
             isAuthenticated={Boolean(authUser && authToken)}
+            activeFareLock={activeFareLock}
             t={t}
             onProceedToCheckout={handleOpenCheckout}
           />
@@ -1160,7 +1740,6 @@ export default function App() {
           />
         )}
         </motion.div>
-        </AnimatePresence>
       </main>
 
       {/* Checkout Modal */}
@@ -1169,12 +1748,16 @@ export default function App() {
           open={checkoutOpen}
           onClose={() => setCheckoutOpen(false)}
           flight={selectedFlight}
+          returnFlight={selectedReturnFlight}
+          tripType={tripType}
           travelDate={travelDate}
+          returnDate={returnDate}
           cabin={cabin}
           luggage={luggage}
-          selectedSeat={selectedSeat?.id || '7A'}
+          selectedSeat={selectedSeat?.id || ''}
           passengersCount={passengersCount}
           fare={checkoutFare}
+          fareLockId={activeFareLock?.lockId}
           currency={currency}
           onCurrencyChange={setCurrency}
           savedPassengers={passengers}
