@@ -1,0 +1,6 @@
+{
+  "name": "AeroMesh Flight & Transit",
+  "description": "Polyglot microservices flight booking platform with luggage fare calculator, multi-currency checkout, offline maps, QR boarding passes, and real-time flight alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
