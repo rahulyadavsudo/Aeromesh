@@ -35,16 +35,18 @@ export function formatShortTime(iso: string): string {
 }
 
 export function saveOfflineItem<T>(key: string, value: T): void {
+  if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(`aeromesh:${key}`, JSON.stringify(value));
+    window.localStorage.setItem(`aeromesh:${key}`, JSON.stringify(value));
   } catch {
     // Ignore quota errors in restricted storage modes
   }
 }
 
 export function loadOfflineItem<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
   try {
-    const raw = localStorage.getItem(`aeromesh:${key}`);
+    const raw = window.localStorage.getItem(`aeromesh:${key}`);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;

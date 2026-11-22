@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useState } from 'react';
 import { Car, Check, LogIn, LogOut, Plus, QrCode, User } from 'lucide-react';
 import type { AuthUser, BookingRecord, PassengerProfile } from '../types/travel';
@@ -170,7 +172,7 @@ export const ProfileAndTrips: React.FC<ProfileAndTripsProps> = ({
             <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
               <div className="flex items-center gap-3.5">
                 <img
-                  src="/src/assets/images/traveler_avatar_profile_1795322418248.jpg"
+                  src="/images/traveler_avatar_profile_1795322418248.jpg"
                   alt={primary.fullName}
                   referrerPolicy="no-referrer"
                   className="h-14 w-14 rounded-full object-cover border border-slate-200 dark:border-slate-700"

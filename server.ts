@@ -5,14 +5,14 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import QRCode from 'qrcode';
-import { createServer as createViteServer } from 'vite';
+import next from 'next';
 import {
   CURRENCY_RATES,
   FLIGHTS_CATALOG,
   INITIAL_PASSENGERS,
   OFFLINE_MAP_PACKS,
   STATIONS,
-} from './src/data/stationsAndFlights';
+} from './src/data/stationsAndFlights.ts';
 import type {
   AnalyticsSummary,
   AuthUser,
@@ -320,6 +320,12 @@ function luhnCheck(cardNumber: string): boolean {
 async function startServer() {
   await seedBookings();
 
+  const dev = process.env.NODE_ENV !== 'production';
+  const nextApp = next({ dev, dir: __dirname });
+  await nextApp.prepare();
+  const handle = nextApp.getRequestHandler();
+  const upgradeHandler = nextApp.getUpgradeHandler();
+
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
@@ -331,6 +337,8 @@ async function startServer() {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
+    } else if (dev) {
+      void upgradeHandler(request, socket, head);
     }
   });
   const wsClients = new Set<WebSocket>();
@@ -997,31 +1005,22 @@ async function startServer() {
     res.json({ events: kafkaEventLog });
   });
 
-  // Vite or Static serving
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-        ws: {
-          server,
-          path: '/vite-hmr',
-        },
-      },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+  // Legacy Vite PWA service worker kill-switch so returning browsers unregister old Workbox cache
+  app.get('/dev-sw.js', (_req, res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.sendFile(path.resolve(__dirname, 'public/dev-sw.js'));
+  });
+
+  // Next.js App Router Frontend handler (handles SSR, static assets, and client routes)
+  app.all('*', (req, res) => {
+    return handle(req, res);
+  });
 
   const port = Number(process.env.PORT) || 3000;
   server.listen(port, '0.0.0.0', () => {
-    console.log(`AeroMesh API Gateway + WebSocket Broker listening on http://0.0.0.0:${port}`);
+    console.log(`AeroMesh Next.js + Express + WebSocket Broker listening on http://0.0.0.0:${port}`);
   });
 }
 

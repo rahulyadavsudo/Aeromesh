@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import {
@@ -53,11 +55,12 @@ type ActiveTab = 'book' | 'fare-lab' | 'passes' | 'analytics' | 'architecture' |
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('book');
-  const [language, setLanguage] = useState<LanguageCode>(() => loadOfflineItem<LanguageCode>('lang', 'en'));
-  const [currency, setCurrency] = useState<CurrencyCode>(() => loadOfflineItem<CurrencyCode>('currency', 'USD'));
-  const [lowBandwidth, setLowBandwidth] = useState<boolean>(() => loadOfflineItem<boolean>('lowBandwidth', false));
+  const [language, setLanguage] = useState<LanguageCode>('en');
+  const [currency, setCurrency] = useState<CurrencyCode>('USD');
+  const [lowBandwidth, setLowBandwidth] = useState<boolean>(false);
   const [simulatedOffline, setSimulatedOffline] = useState(false);
-  const [darkMode, setDarkMode] = useState<boolean>(() => loadOfflineItem<boolean>('darkMode', false));
+  const [darkMode, setDarkMode] = useState<boolean>(false);
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
 
   // In-memory authentication session (never stored in localStorage/sessionStorage)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -100,7 +103,7 @@ export default function App() {
   const [checkoutFare, setCheckoutFare] = useState<FareBreakdown | null>(null);
 
   // Data stores synced with backend + offline localStorage cache
-  const [bookings, setBookings] = useState<BookingRecord[]>(() => loadOfflineItem<BookingRecord[]>('bookings', []));
+  const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [activePassPnr, setActivePassPnr] = useState<string | null>(null);
   const [passengers, setPassengers] = useState<PassengerProfile[]>(INITIAL_PASSENGERS);
   const [notifications, setNotifications] = useState<NotificationEvent[]>([]);
@@ -112,25 +115,55 @@ export default function App() {
 
   const t = TRANSLATIONS[language] || TRANSLATIONS.en;
 
+  // Hydrate offline preferences & register PWA Service Worker on client mount
+  useEffect(() => {
+    setLanguage(loadOfflineItem<LanguageCode>('lang', 'en'));
+    setCurrency(loadOfflineItem<CurrencyCode>('currency', 'USD'));
+    setLowBandwidth(loadOfflineItem<boolean>('lowBandwidth', false));
+    setDarkMode(loadOfflineItem<boolean>('darkMode', false));
+    const cachedBookings = loadOfflineItem<BookingRecord[]>('bookings', []);
+    if (cachedBookings.length > 0) {
+      setBookings(cachedBookings);
+      setActivePassPnr((prev) => prev || cachedBookings[0].pnr);
+    }
+    setPrefsHydrated(true);
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) =>
+          Promise.all(
+            regs
+              .filter((r) => r.active?.scriptURL.includes('dev-sw.js'))
+              .map((r) => r.unregister())
+          )
+        )
+        .finally(() => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+    }
+  }, []);
+
   // Sync dark mode class on <html>
   useEffect(() => {
+    if (!prefsHydrated) return;
     const root = document.documentElement;
     if (darkMode) root.classList.add('dark');
     else root.classList.remove('dark');
     saveOfflineItem('darkMode', darkMode);
-  }, [darkMode]);
+  }, [darkMode, prefsHydrated]);
 
   useEffect(() => {
-    saveOfflineItem('lang', language);
-  }, [language]);
+    if (prefsHydrated) saveOfflineItem('lang', language);
+  }, [language, prefsHydrated]);
 
   useEffect(() => {
-    saveOfflineItem('currency', currency);
-  }, [currency]);
+    if (prefsHydrated) saveOfflineItem('currency', currency);
+  }, [currency, prefsHydrated]);
 
   useEffect(() => {
-    saveOfflineItem('lowBandwidth', lowBandwidth);
-  }, [lowBandwidth]);
+    if (prefsHydrated) saveOfflineItem('lowBandwidth', lowBandwidth);
+  }, [lowBandwidth, prefsHydrated]);
 
   // Load initial backend data
   useEffect(() => {
@@ -666,7 +699,7 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8 space-y-10">
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={activeTab}
           initial={{ opacity: 0, y: 8 }}
@@ -680,9 +713,9 @@ export default function App() {
             {/* Hero + Flight Search Split */}
             <section className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.42, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ y: 12 }}
+                animate={{ y: 0 }}
+                transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
                 className="lg:col-span-7 flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 dark:border-slate-800 dark:bg-slate-900"
               >
                 <div>
@@ -816,9 +849,9 @@ export default function App() {
 
               {/* Right Column: Editorial Terminal Photo OR Zero-Byte Low-Bandwidth Schematic */}
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.45, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ y: 12 }}
+                animate={{ y: 0 }}
+                transition={{ duration: 0.38, delay: 0.06, ease: [0.16, 1, 0.3, 1] }}
                 className="lg:col-span-5 overflow-hidden rounded-2xl border border-slate-200 bg-slate-900 dark:border-slate-800"
               >
                 {lowBandwidth ? (
@@ -855,7 +888,7 @@ export default function App() {
                       initial={{ scale: 1.06 }}
                       animate={{ scale: 1 }}
                       transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
-                      src="/src/assets/images/aviation_terminal_hero_1795322418590.jpg"
+                      src="/images/aviation_terminal_hero_1795322418590.jpg"
                       alt="Modern sunlit international airport terminal concourse"
                       referrerPolicy="no-referrer"
                       className="h-full w-full object-cover"
